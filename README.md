@@ -1,5 +1,4 @@
 # vgm_ws_to_mid_v0.6
-WonderSwan VGM to MIDI Converter 
 # vgm_ws_to_mid: WonderSwan VGM to MIDI Converter - Project Documentation
 
 This document provides a detailed account of the development journey, technical implementation, and final program workflow of the `vgm_ws_to_mid` converter.
