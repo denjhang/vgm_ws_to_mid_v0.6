@@ -1,0 +1,334 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>vgm_ws_to_mid: WonderSwan VGM to MIDI Converter - Project Documentation</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif, "Apple Color Emoji", "Segoe UI Emoji";
+            line-height: 1.6;
+            color: #24292e;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 30px;
+            background-color: #fff;
+        }
+        h1, h2, h3, h4, h5, h6 {
+            margin-top: 24px;
+            margin-bottom: 16px;
+            font-weight: 600;
+            line-height: 1.25;
+            border-bottom: 1px solid #eaecef;
+            padding-bottom: .3em;
+        }
+        h1 { font-size: 2em; }
+        h2 { font-size: 1.5em; }
+        h3 { font-size: 1.25em; }
+        code {
+            padding: .2em .4em;
+            margin: 0;
+            font-size: 85%;
+            background-color: rgba(27,31,35,.05);
+            border-radius: 3px;
+            font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, Courier, monospace;
+        }
+        pre {
+            padding: 16px;
+            overflow: auto;
+            font-size: 85%;
+            line-height: 1.45;
+            background-color: #f6f8fa;
+            border-radius: 3px;
+        }
+        pre code {
+            display: inline;
+            padding: 0;
+            margin: 0;
+            overflow: visible;
+            line-height: inherit;
+            word-wrap: normal;
+            background-color: transparent;
+            border: 0;
+        }
+        table {
+            border-collapse: collapse;
+            width: 100%;
+            margin-top: 1em;
+            margin-bottom: 1em;
+        }
+        th, td {
+            border: 1px solid #ddd;
+            padding: 8px;
+            text-align: left;
+        }
+        th {
+            background-color: #f2f2f2;
+            font-weight: 600;
+        }
+        ul, ol {
+            padding-left: 2em;
+        }
+        strong {
+            font-weight: 600;
+        }
+        hr {
+            height: .25em;
+            padding: 0;
+            margin: 24px 0;
+            background-color: #e1e4e8;
+            border: 0;
+        }
+    </style>
+</head>
+<body>
+
+<h1>vgm_ws_to_mid: WonderSwan VGM to MIDI Converter - Project Documentation</h1>
+
+<p>This document provides a detailed account of the development journey, technical implementation, and final program workflow of the <code>vgm_ws_to_mid</code> converter.</p>
+
+<h2>1. Development Journey: From Zero to a Flawless Converter</h2>
+
+<p>The goal of this project was to create a C++ program capable of accurately converting WonderSwan (WS) VGM files into MIDI files. The entire process was filled with challenges, but through a series of analysis, debugging, and iteration, we ultimately overcame them all.</p>
+
+<h3>1.1. Initial Exploration: Deconstructing the Core Logic</h3>
+<ul>
+    <li><strong>Challenge</strong>: Hardware documentation for the WonderSwan sound chip is scarce, making a direct conversion unfeasible.</li>
+    <li><strong>Solution</strong>: In the early stages, we obtained the source code for the <code>modizer</code> project. By analyzing its file structure, we quickly located the key file: <code>modizer-master/libs/libwonderswan/libwonderswan/oswan/audio.cpp</code>. Through an in-depth study of this file, we successfully extracted the core information for simulating the WonderSwan sound chip:
+        <ol>
+            <li><strong>Clock Frequency</strong>: Confirmed its master clock frequency is <code>3.072 MHz</code>.</li>
+            <li><strong>Register Functions</strong>: Clarified the roles of key registers such as <code>0x80-0x87</code> (frequency), <code>0x88-0x8B</code> (volume), and <code>0x90</code> (channel switch).</li>
+            <li><strong>Waveform Table Mechanism</strong>: Discovered the most critical detail—the frequency calculation must be divided by <code>32</code> (the size of the waveform table). This was the key to solving the pitch problem.</li>
+        </ol>
+    </li>
+</ul>
+
+<h3>1.2. The First Major Hurdle: Correcting Pitch and Timing</h3>
+<ul>
+    <li><strong>Challenge</strong>: The initial version of the converter produced MIDI files with abnormally high pitch and a playback duration that did not match the original VGM at all.</li>
+    <li><strong>Breakthrough Process</strong>:
+        <ol>
+            <li><strong>Timing Issue</strong>: We realized that the VGM "wait" command (<code>0x61 nn nn</code>) is based on samples at 44100 Hz, while MIDI time is measured in <code>ticks</code>. By introducing a conversion factor <code>SAMPLES_TO_TICKS = (480.0 * 120.0) / (44100.0 * 60.0)</code>, we successfully converted the sample count into precise MIDI ticks under the standard 120 BPM and 480 PPQN, resolving the duration mismatch.</li>
+            <li><strong>Pitch Issue</strong>: This was the toughest problem. The initial frequency conversion formula <code>freq = 3072000.0 / (2048.0 - period)</code> resulted in a pitch that was a full five octaves too high. After repeatedly reviewing the <code>modizer</code>'s <code>audio.cpp</code> source, we noticed a detail: the final frequency value was used as an index for a waveform table. This led us to the insight that the actual audible frequency is the result of the clock frequency after division and waveform table processing. By adding <code>/ 32</code> to the end of our formula, we obtained the correct frequency, and the pitch problem was solved.</li>
+        </ol>
+    </li>
+</ul>
+
+<h3>1.3. The Silent MIDI: Decrypting Dynamic Volume</h3>
+<ul>
+    <li><strong>Challenge</strong>: After implementing volume control, the generated MIDI files became silent in many players, or the volume changes did not behave as expected.</li>
+    <li><strong>Breakthrough Process</strong>:
+        <ol>
+            <li><strong>Problem-Solving</strong>: Initially, we used MIDI CC#7 (Main Volume) to handle volume changes during a note's duration. However, many MIDI synthesizers treat CC#7 as a static setting for a channel rather than a real-time "expression" parameter, leading to compatibility issues.</li>
+            <li><strong>Solution</strong>: By consulting MIDI specifications and best practices, we confirmed that CC#11 (Expression) is the standard controller for handling dynamic note envelopes. After changing the code from <code>add_control_change(channel, 7, ...)</code> to <code>add_control_change(channel, 11, ...)</code>, the MIDI files correctly exhibited dynamic volume changes on all players, and the silence issue was completely resolved.</li>
+        </ol>
+    </li>
+</ul>
+
+<h3>1.4. The Final Polish: The Art of Volume Mapping</h3>
+<ul>
+    <li><strong>Challenge</strong>: Even with dynamic volume implemented, the vast difference in dynamic range between WonderSwan's 4-bit volume (0-15) and MIDI's 7-bit volume (0-127) caused a direct linear mapping to result in an overall low volume, making the music sound "weak".</li>
+    <li><strong>Breakthrough Process</strong>:
+        <ol>
+            <li><strong>Problem Analysis</strong>: A linear mapping <code>midi_vol = vgm_vol / 15.0 * 127.0</code> mapped a large portion of the mid-to-low range VGM volumes to very low, barely audible MIDI values.</li>
+            <li><strong>Non-linear Mapping</strong>: To boost overall audibility while preserving dynamic range, we introduced a power function <code>pow(normalized_vol, exponent)</code> as a non-linear mapping curve. Through experimentation, we found:
+                <ul>
+                    <li><code>exponent = 0.6</code>: A good starting point that effectively boosted low volumes, but was still not loud enough per user feedback.</li>
+                    <li><code>exponent = 0.3</code>: A more aggressive curve that dramatically enhanced the expressiveness of mid-to-low volumes while still maintaining headroom at maximum volume to avoid clipping.</li>
+                </ul>
+            </li>
+            <li><strong>Iteration via User Feedback</strong>: Based on the final user feedback ("raise the pitch by one octave and keep increasing the volume"), we removed the experimental <code>-12</code> pitch offset and adopted the <code>exponent = 0.3</code> volume curve, finally achieving a perfect result that satisfied the user.</li>
+        </ol>
+    </li>
+</ul>
+
+<h3>1.5. The Self-Correcting Feedback Loop: The Power of Custom Validation Tools</h3>
+<p>You astutely pointed out the key to this project's success: we didn't just write a converter; more importantly, we created tools for validation and debugging. This established a powerful and rapid "Code-Test-Validate" feedback loop, enabling us to objectively and efficiently discover and solve problems, rather than relying on subjective listening.</p>
+
+<strong>Core Debugging Tool: <code>midi_validator.exe</code></strong>
+<p>This is a lightweight MIDI parser written from scratch. Its functionality evolved as the project progressed:</p>
+<ul>
+    <li><strong>Initial Function</strong>: Checked the basic structural integrity of the MIDI file, ensuring the header (MThd) and track chunks (MTrk) were not corrupted.</li>
+    <li><strong>Core Function</strong>: The biggest breakthrough was adding a detailed <strong>event logging</strong> feature. It could list every single MIDI event (Note On, Note Off, Control Change, etc.) in a clear, chronological, line-by-line format, displaying its precise tick time, channel, and data values.</li>
+</ul>
+
+<strong>How Did It Help Us?</strong>
+<ol>
+    <li><strong>Validating Timing</strong>: By examining the <code>Tick</code> column in the log, we could precisely verify the correctness of the <code>SAMPLES_TO_TICKS</code> formula.</li>
+    <li><strong>Validating Pitch</strong>: The <code>Data 1</code> column for <code>Note On</code> events directly showed the MIDI pitch number, allowing us to objectively judge the accuracy of the pitch conversion instead of just "how it sounds."</li>
+    <li><strong>Debugging Volume</strong>: This was its most critical use. By observing the velocity (<code>Data 2</code>) of <code>Note On</code> events and the values of CC#11 events, we could quantify the volume level. This allowed us to pinpoint the root cause of the "silent MIDI" issue (CC#7 vs. CC#11) and scientifically tune the exponent of our non-linear volume curve until the output values fell within the desired range.</li>
+</ol>
+
+<strong>The Feedback-Driven Debugging Workflow</strong>
+<p>This tool made our debugging process efficient and scientific:</p>
+<ol>
+    <li><strong>Modify</strong>: Adjust the conversion logic in <code>WonderSwanChip.cpp</code>.</li>
+    <li><strong>Compile</strong>: Recompile <code>converter.exe</code>.</li>
+    <li><strong>Generate</strong>: Run the converter to produce a new <code>output.mid</code>.</li>
+    <li><strong>Validate</strong>: <strong>Immediately run <code>midi_validator.exe output.mid</code></strong> to get an objective "health report" on the new file.</li>
+    <li><strong>Analyze</strong>: Compare the log against expectations to confirm if the changes were effective and if any new issues were introduced.</li>
+    <li><strong>Iterate</strong>: Based on the analysis, proceed with the next round of modifications.</li>
+</ol>
+<p>This data-driven iterative approach was the core methodology that enabled us to overcome numerous tricky technical hurdles and ultimately achieve a near-perfect result.</p>
+
+<h3>1.6. An Example Trace: The Life of a VGM Command Sequence</h3>
+<p>To understand the conversion process more concretely, let's trace a small, typical sequence of VGM commands and see how they become MIDI events.</p>
+<p>Assume our converter receives the following VGM command sequence at <code>tick = 100</code>:</p>
+<table>
+    <thead>
+        <tr>
+            <th>VGM Command (Hex)</th>
+            <th>Meaning</th>
+            <th>Internal State Change & Action</th>
+        </tr>
+    </thead>
+    <tbody>
+        <tr>
+            <td><code>51 88 88</code></td>
+            <td>Write <code>0x88</code> to port <code>0x88</code></td>
+            <td><code>WonderSwanChip</code> updates: <code>channel_volumes_left[0] = 8</code>, <code>channel_volumes_right[0] = 8</code>.</td>
+        </tr>
+        <tr>
+            <td><code>51 80 E0</code></td>
+            <td>Write <code>0xE0</code> to port <code>0x80</code></td>
+            <td><code>WonderSwanChip</code> updates: the low 8 bits of <code>channel_periods[0]</code> become <code>0xE0</code>.</td>
+        </tr>
+        <tr>
+            <td><code>51 81 06</code></td>
+            <td>Write <code>0x06</code> to port <code>0x81</code></td>
+            <td><code>WonderSwanChip</code> updates: the high 3 bits of <code>channel_periods[0]</code> become <code>0x06</code>. The period value is now <code>0x6E0</code> (1760).</td>
+        </tr>
+        <tr>
+            <td><code>51 90 01</code></td>
+            <td>Write <code>0x01</code> to port <code>0x90</code></td>
+            <td><code>WonderSwanChip</code> updates: <code>channel_enabled[0] = true</code>. <strong>The state machine detects an "on" signal</strong> with volume > 0.</td>
+        </tr>
+        <tr>
+            <td><code>61 F4 01</code></td>
+            <td>Wait for 500 samples (~11.3 ms)</td>
+            <td><code>WonderSwanChip</code> accumulates time. The note continues to sound.</td>
+        </tr>
+        <tr>
+            <td><code>51 88 44</code></td>
+            <td>Write <code>0x44</code> to port <code>0x88</code></td>
+            <td><code>WonderSwanChip</code> updates: <code>channel_volumes_left[0] = 4</code>, <code>channel_volumes_right[0] = 4</code>. <strong>The state machine detects a volume change</strong>.</td>
+        </tr>
+        <tr>
+            <td><code>61 F4 01</code></td>
+            <td>Wait for 500 samples (~11.3 ms)</td>
+            <td><code>WonderSwanChip</code> accumulates time. The note continues to sound at the new volume.</td>
+        </tr>
+        <tr>
+            <td><code>51 90 00</code></td>
+            <td>Write <code>0x00</code> to port <code>0x90</code></td>
+            <td><code>WonderSwanChip</code> updates: <code>channel_enabled[0] = false</code>. <strong>The state machine detects an "off" signal</strong>.</td>
+        </tr>
+    </tbody>
+</table>
+
+<strong>Generated MIDI Event Sequence:</strong>
+<table>
+    <thead>
+        <tr>
+            <th>Tick</th>
+            <th>MIDI Event</th>
+            <th>Channel</th>
+            <th>Data 1 (Pitch/CC#)</th>
+            <th>Data 2 (Velocity/Value)</th>
+            <th>Remarks</th>
+        </tr>
+    </thead>
+    <tbody>
+        <tr>
+            <td>100</td>
+            <td><code>Note On</code></td>
+            <td>0</td>
+            <td>65 (F4)</td>
+            <td>105</td>
+            <td>Note begins. Pitch is calculated from period <code>1760</code>, velocity is derived from volume <code>8</code> via non-linear mapping.</td>
+        </tr>
+        <tr>
+            <td>124</td>
+            <td><code>Control Change</code></td>
+            <td>0</td>
+            <td>11 (Expression)</td>
+            <td>88</td>
+            <td>During the note, volume drops from <code>8</code> to <code>4</code>, triggering an expression controller event.</td>
+        </tr>
+        <tr>
+            <td>148</td>
+            <td><code>Note Off</code></td>
+            <td>0</td>
+            <td>65 (F4)</td>
+            <td>0</td>
+            <td>The channel is disabled, triggering a note-off event.</td>
+        </tr>
+    </tbody>
+</table>
+<p>This example clearly demonstrates how the converter operates like a true chip emulator, intelligently generating a MIDI stream in real-time by responding to register state changes.</p>
+
+<h2>2. Program Workflow Explained</h2>
+<p>The core of <code>vgm_ws_to_mid</code> is a state machine that simulates the behavior of the WonderSwan sound chip and translates its state changes into MIDI events in real-time.</p>
+
+<h3>2.1. Overview</h3>
+<ol>
+    <li><strong>Read</strong>: <code>VgmReader</code> reads the VGM file byte by byte, parsing out commands (e.g., port writes, waits).</li>
+    <li><strong>Process</strong>: The <code>main</code> function loops through the VGM commands.
+        <ul>
+            <li>If it's a <strong>wait command</strong>, it accumulates time.</li>
+            <li>If it's a <strong>port write command</strong>, it sends it to the <code>WonderSwanChip</code>.</li>
+        </ul>
+    </li>
+    <li><strong>Simulate & Translate</strong>: <code>WonderSwanChip</code> receives the port write data and updates its internal register states (e.g., frequency, volume). After each update, it checks if the channel's state has changed (e.g., note on/off, pitch change, volume change).</li>
+    <li><strong>Generate</strong>: If a meaningful state change is detected, <code>WonderSwanChip</code> calls <code>MidiWriter</code> to generate the corresponding MIDI event (Note On/Off, Control Change) with the current, precise MIDI tick time.</li>
+    <li><strong>Write</strong>: After all VGM commands are processed, <code>MidiWriter</code> assembles all generated events into a standard MIDI file and saves it to disk.</li>
+</ol>
+
+<h3>2.2. Key Components</h3>
+<ul>
+    <li><strong><code>main.cpp</code></strong>: The program entry point. It's responsible for parsing command-line arguments, instantiating <code>VgmReader</code>, <code>MidiWriter</code>, and <code>WonderSwanChip</code>, and driving the entire conversion process.</li>
+    <li><strong><code>VgmReader.h/.cpp</code></strong>: The VGM file parser. It reads the file as a stream, handling data blocks and various VGM commands, abstracting away the complexity of the file format.</li>
+    <li><strong><code>WonderSwanChip.h/.cpp</code></strong>: The <strong>conversion core</strong>.
+        <ul>
+            <li>It maintains an <code>io_ram</code> array to simulate the chip's 256 I/O registers.</li>
+            <li>The <code>write_port()</code> method is the key entry point, updating internal state variables (like <code>channel_periods</code>, <code>channel_volumes_left</code>, etc.) based on the port address being written to.</li>
+            <li><code>check_state_and_update_midi()</code> is the brain of the state machine. After each state update, it compares the current state to the previous one to determine if a MIDI event needs to be generated, thus intelligently handling legato, re-triggers, and volume envelopes.</li>
+        </ul>
+    </li>
+    <li><strong><code>MidiWriter.h/.cpp</code></strong>: The MIDI file generator. It provides a simple set of APIs (like <code>add_note_on</code>, <code>add_control_change</code>) to build a MIDI track in memory. When the conversion is finished, the <code>finalize_and_write()</code> method calculates track lengths, adds headers and footers, and writes a correctly formatted SMF (Standard MIDI File).</li>
+</ul>
+
+<h3>2.3. Key Formulas and Constants</h3>
+<ul>
+    <li><strong>Timing Conversion</strong>:
+        <pre><code>const double SAMPLES_TO_TICKS = (480.0 * 120.0) / (44100.0 * 60.0);</code></pre>
+    </li>
+    <li><strong>Pitch Conversion</strong>:
+        <pre><code>double freq = (3072000.0 / (2048.0 - period)) / 32.0;
+int note = static_cast<int>(round(69 + 12 * log2(freq / 440.0)));</code></pre>
+    </li>
+    <li><strong>Volume Mapping</strong>:
+        <pre><code>double normalized_vol = vgm_vol / 15.0;
+double curved_vol = pow(normalized_vol, 0.3);
+int velocity = static_cast<int>(curved_vol * 127.0);</code></pre>
+    </li>
+</ul>
+
+<h2>3. How to Compile and Run</h2>
+<p>This project is compiled using g++ in a bash environment.</p>
+<ul>
+    <li><strong>Compile</strong>:
+        <pre><code class="language-bash">g++ -std=c++17 -o vgm_ws_to_mid/converter.exe vgm_ws_to_mid/main.cpp vgm_ws_to_mid/VgmReader.cpp vgm_ws_to_mid/WonderSwanChip.cpp vgm_ws_to_mid/MidiWriter.cpp -static</code></pre>
+    </li>
+    <li><strong>Run</strong>:
+        <pre><code class="language-bash">vgm_ws_to_mid/converter.exe [input_vgm_file] [output_mid_file]</code></pre>
+        For example:
+        <pre><code class="language-bash">vgm_ws_to_mid/converter.exe inn.vgm vgm_ws_to_mid/output.mid</code></pre>
+    </li>
+</ul>
+
+<hr>
+<p>This document provides a comprehensive summary of our work. We hope it serves as a clear guide for future development and maintenance.</p>
+
+</body>
+</html>

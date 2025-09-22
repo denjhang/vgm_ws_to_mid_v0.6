@@ -1,0 +1,10 @@
+Validating MIDI file: vgm_ws_to_mid/output.mid
+MIDI file confirmed.
+4D 54 68 64 Header length: 6
+00 00 00 06 Format: 1, Tracks: 1, Ticks/QN: 1E0
+00 01 00 01 01 E0 
+--- Track 1 ---
+MTrk chunk found.
+4D 54 72 6B Track length: 388
+00 00 03 88 
+Validation finished.

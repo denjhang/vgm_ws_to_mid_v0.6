@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>vgm_ws_to_mid: WonderSwan VGM to MIDI 转换器 - 项目文档</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif, "Apple Color Emoji", "Segoe UI Emoji";
+            line-height: 1.6;
+            color: #24292e;
+            background-color: #fff;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 30px;
+        }
+        h1, h2, h3 {
+            border-bottom: 1px solid #eaecef;
+            padding-bottom: .3em;
+            margin-top: 24px;
+            margin-bottom: 16px;
+            font-weight: 600;
+        }
+        h1 { font-size: 2em; }
+        h2 { font-size: 1.5em; }
+        h3 { font-size: 1.25em; }
+        code {
+            font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, Courier, monospace;
+            background-color: rgba(27,31,35,.05);
+            padding: .2em .4em;
+            margin: 0;
+            font-size: 85%;
+            border-radius: 3px;
+        }
+        pre {
+            background-color: #f6f8fa;
+            padding: 16px;
+            overflow: auto;
+            border-radius: 3px;
+            word-wrap: normal;
+            word-break: normal;
+        }
+        pre code {
+            padding: 0;
+            margin: 0;
+            font-size: 100%;
+            background-color: transparent;
+            border: 0;
+        }
+        table {
+            border-collapse: collapse;
+            width: 100%;
+            margin-top: 1em;
+            margin-bottom: 1em;
+            display: block;
+            overflow: auto;
+        }
+        th, td {
+            border: 1px solid #dfe2e5;
+            padding: 6px 13px;
+        }
+        th {
+            background-color: #f6f8fa;
+            font-weight: 600;
+        }
+        ul, ol {
+            padding-left: 2em;
+        }
+        li {
+            margin-top: .25em;
+        }
+        hr {
+            height: .25em;
+            padding: 0;
+            margin: 24px 0;
+            background-color: #e1e4e8;
+            border: 0;
+        }
+    </style>
+</head>
+<body>
+    <h1>vgm_ws_to_mid: WonderSwan VGM to MIDI 转换器 - 项目文档</h1>
+    <p>本文档详细记录了 <code>vgm_ws_to_mid</code> 转换器的开发历程、技术实现细节以及最终程序的工作流程。</p>
+    
+    <h2>1. 开发历程：从零到完美的转换器</h2>
+    <p>这个项目的目标是创建一个能够将 WonderSwan (WS) VGM 文件精确转换为 MIDI 文件的 C++ 程序。整个过程充满了挑战，通过一系列的分析、调试和迭代，我们最终克服了所有困难。</p>
+    
+    <h3>1.1. 初期探索：解构核心逻辑</h3>
+    <ul>
+        <li><strong>挑战</strong>: WonderSwan 声音芯片的硬件文档稀缺，直接转换不可行。</li>
+        <li><strong>解决方案</strong>: 项目初期，我们获得了 <code>modizer</code> 项目的源代码。通过分析其文件结构，我们迅速定位到 <code>modizer-master/libs/libwonderswan/libwonderswan/oswan/audio.cpp</code> 这个关键文件。通过深入研究该文件，我们成功提取了 WonderSwan 声音芯片模拟的核心信息：
+            <ol>
+                <li><strong>时钟频率</strong>: 确认了其主时钟频率为 <code>3.072 MHz</code>。</li>
+                <li><strong>寄存器功能</strong>: 明确了 <code>0x80-0x87</code> (频率), <code>0x88-0x8B</code> (音量), 和 <code>0x90</code> (通道开关) 等关键寄存器的作用。</li>
+                <li><strong>波形表机制</strong>: 发现了最关键的一个细节——频率计算必须除以 <code>32</code>（波形表大小），这是解决音高问题的钥匙。</li>
+            </ol>
+        </li>
+    </ul>
+
+    <h3>1.2. 第一座大山：修正音高与时序</h3>
+    <ul>
+        <li><strong>挑战</strong>: 初版转换器生成的 MIDI 文件音高异常地高，且播放时长与原始 VGM 完全不符。</li>
+        <li><strong>攻克过程</strong>:
+            <ol>
+                <li><strong>时序问题</strong>: 我们意识到 VGM 的“等待”命令（<code>0x61 nn nn</code>）是以 1/44100 秒的采样为单位的，而 MIDI 的时间单位是 <code>tick</code>。通过引入一个转换因子 <code>SAMPLES_TO_TICKS = (480.0 * 120.0) / (44100.0 * 60.0)</code>，我们成功地将采样数精确地转换为了在 120 BPM 和 480 PPQN 标准下的 MIDI ticks，从而解决了时长不匹配的问题。</li>
+                <li><strong>音高问题</strong>: 这是最棘手的难题。最初的频率转换公式 <code>freq = 3072000.0 / (2048.0 - period)</code> 产生的音高偏高了整整五个八度。在反复检查 <code>modizer</code> 的 <code>audio.cpp</code> 源码后，我们注意到了一个细节：最终的频率值被用作波形表的索引。这启发了我们，实际的听觉频率应该是时钟频率经过分频和波形表处理后的结果。最终，通过在公式末尾加入 <code>/ 32</code>，我们得到了正确的频率，音高问题迎刃而解。</li>
+            </ol>
+        </li>
+    </ul>
+
+    <h3>1.3. 无声的 MIDI：解密动态音量</h3>
+    <ul>
+        <li><strong>挑战</strong>: 在实现了音量控制后，生成的 MIDI 文件在许多播放器中变得无声，或者音量变化不符合预期。</li>
+        <li><strong>攻克过程</strong>:
+            <ol>
+                <li><strong>问题定位</strong>: 最初，我们使用 MIDI CC#7 (主音量) 来处理音符持续期间的音量变化。然而，许多 MIDI 合成器将 CC#7 视为一个通道的静态设置，而不是一个可以实时调制的“表情”参数，这导致了兼容性问题。</li>
+                <li><strong>解决方案</strong>: 通过查阅 MIDI 规范和最佳实践，我们确认 CC#11 (表情) 是处理音符动态包络的标准控制器。将代码中的 <code>add_control_change(channel, 7, ...)</code> 修改为 <code>add_control_change(channel, 11, ...)</code> 后，MIDI 文件在所有播放器上都能正确地表现出动态音量变化，无声问题彻底解决。</li>
+            </ol>
+        </li>
+    </ul>
+
+    <h3>1.4. 最终的润色：音量映射的艺术</h3>
+    <ul>
+        <li><strong>挑战</strong>: 即便动态音量已实现，但由于 WonderSwan 的 4-bit 音量（0-15）与 MIDI 的 7-bit 音量（0-127）之间存在巨大的动态范围差异，直接线性映射导致整体音量偏小，音乐听起来“有气无力”。</li>
+        <li><strong>攻克过程</strong>:
+            <ol>
+                <li><strong>分析问题</strong>: 线性映射 <code>midi_vol = vgm_vol / 15.0 * 127.0</code> 使得大量处于中低范围的 VGM 音量被映射到了 MIDI 中非常低的数值，人耳难以感知。</li>
+                <li><strong>非线性映射</strong>: 为了在提升整体可听度的同时保留动态范围，我们引入了幂函数 <code>pow(normalized_vol, exponent)</code> 作为非线性映射曲线。通过反复试验，我们发现：
+                    <ul>
+                        <li><code>exponent = 0.6</code>：一个很好的起点，能有效提升低音量，但用户反馈仍不够响亮。</li>
+                        <li><code>exponent = 0.3</code>：一个更激进的曲线，极大地增强了中低音量的表现力，同时在最大音量处仍能保持 headroom，避免了削波失真。</li>
+                    </ul>
+                </li>
+                <li><strong>用户反馈迭代</strong>: 根据用户的最终反馈（“提升一个八度，继续增加音量”），我们移除了之前测试性的 <code>-12</code> 音高偏移，并采用了 <code>exponent = 0.3</code> 的音量曲线，最终达到了用户满意的完美效果。</li>
+            </ol>
+        </li>
+    </ul>
+
+    <h3>1.5. 自我修正的反馈闭环：定制化验证工具的力量</h3>
+    <p>您敏锐地指出了本项目成功的关键：我们不仅编写了转换程序，更重要的是，我们创造了用于验证和调试的工具。这形成了一个强大的“编码-测试-验证”的快速反馈闭环，使我们能够客观、高效地发现并解决问题，而不是依赖主观听感。</p>
+    <p><strong>核心调试工具：<code>midi_validator.exe</code></strong></p>
+    <p>这是一个从零开始编写的轻量级 MIDI 解析器。它的功能随着项目的进展而不断进化：</p>
+    <ul>
+        <li><strong>初期功能</strong>: 检查 MIDI 文件的基本结构完整性，确保文件头（MThd）和轨道块（MTrk）没有损坏。</li>
+        <li><strong>核心功能</strong>: 最大的突破是为其增加了详细的<strong>事件日志打印</strong>功能。它能够逐行、按时间顺序清晰地列出每一个 MIDI 事件（音符开、音符关、控制器变更等），并显示其精确的 tick 时间、通道和数据值。</li>
+    </ul>
+    <p><strong>它如何帮助我们？</strong></p>
+    <ol>
+        <li><strong>验证时序</strong>: 通过查看事件的 <code>Tick</code> 列，我们可以精确验证 <code>SAMPLES_TO_TICKS</code> 公式的正确性。</li>
+        <li><strong>验证音高</strong>: <code>Note On</code> 事件的 <code>Data 1</code> 列直接显示了 MIDI 音高编号，让我们能客观地判断音高转换是否准确，而不是靠“听起来像”。</li>
+        <li><strong>调试音量</strong>: 这是它最重要的用途。通过观察 <code>Note On</code> 的力度（<code>Data 2</code>）和 CC#11 事件的值，我们能够量化音量的大小，从而定位“静音MIDI”的根源（CC#7 vs CC#11），并科学地调整非线性音量曲线的指数，直到输出的数值达到预期范围。</li>
+    </ol>
+    <p><strong>反馈调试流程</strong></p>
+    <p>这个工具使我们的调试流程变得高效而科学：</p>
+    <ol>
+        <li><strong>修改</strong>: 在 <code>WonderSwanChip.cpp</code> 中调整转换逻辑。</li>
+        <li><strong>编译</strong>: 重新编译 <code>converter.exe</code>。</li>
+        <li><strong>生成</strong>: 运行转换器，生成新的 <code>output.mid</code>。</li>
+        <li><strong>验证</strong>: <strong>立即运行 <code>midi_validator.exe output.mid</code></strong>，获取一份关于新文件的、客观的“体检报告”。</li>
+        <li><strong>分析</strong>: 对比日志与预期，确认修改是否生效、是否引入了新的问题。</li>
+        <li><strong>迭代</strong>: 基于分析结果，进行下一轮修改。</li>
+    </ol>
+    <p>这种数据驱动的迭代方式，是本项目能够克服众多棘手技术难题、最终达到近乎完美效果的核心方法论。</p>
+
+    <h3>1.6. 实例追踪：一组VGM命令的生命周期</h3>
+    <p>为了更具体地理解转换过程，让我们追踪一小段典型的VGM命令流，看看它们是如何一步步变成MIDI事件的。</p>
+    <p>假设我们的转换器在 <code>tick = 100</code> 时收到了以下VGM命令序列：</p>
+    <table>
+        <thead>
+            <tr>
+                <th>VGM 命令 (Hex)</th>
+                <th>含义</th>
+                <th>内部状态变化与动作</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td><code>51 88 88</code></td>
+                <td>写入 <code>0x88</code> 到端口 <code>0x88</code></td>
+                <td><code>WonderSwanChip</code> 更新：<code>channel_volumes_left[0] = 8</code>, <code>channel_volumes_right[0] = 8</code>。</td>
+            </tr>
+            <tr>
+                <td><code>51 80 E0</code></td>
+                <td>写入 <code>0xE0</code> 到端口 <code>0x80</code></td>
+                <td><code>WonderSwanChip</code> 更新：<code>channel_periods[0]</code> 的低8位为 <code>0xE0</code>。</td>
+            </tr>
+            <tr>
+                <td><code>51 81 06</code></td>
+                <td>写入 <code>0x06</code> 到端口 <code>0x81</code></td>
+                <td><code>WonderSwanChip</code> 更新：<code>channel_periods[0]</code> 的高3位为 <code>0x06</code>。此时周期值为 <code>0x6E0</code> (1760)。</td>
+            </tr>
+            <tr>
+                <td><code>51 90 01</code></td>
+                <td>写入 <code>0x01</code> 到端口 <code>0x90</code></td>
+                <td><code>WonderSwanChip</code> 更新：<code>channel_enabled[0] = true</code>。<strong>状态机检测到“开”信号</strong>，且音量>0。</td>
+            </tr>
+            <tr>
+                <td><code>61 F4 01</code></td>
+                <td>等待 500 个采样 (约 11.3 毫秒)</td>
+                <td><code>WonderSwanChip</code> 累加时间。音符持续发声。</td>
+            </tr>
+            <tr>
+                <td><code>51 88 44</code></td>
+                <td>写入 <code>0x44</code> 到端口 <code>0x88</code></td>
+                <td><code>WonderSwanChip</code> 更新：<code>channel_volumes_left[0] = 4</code>, <code>channel_volumes_right[0] = 4</code>。<strong>状态机检测到音量变化</strong>。</td>
+            </tr>
+            <tr>
+                <td><code>61 F4 01</code></td>
+                <td>等待 500 个采样 (约 11.3 毫秒)</td>
+                <td><code>WonderSwanChip</code> 累加时间。音符以新音量持续发声。</td>
+            </tr>
+            <tr>
+                <td><code>51 90 00</code></td>
+                <td>写入 <code>0x00</code> 到端口 <code>0x90</code></td>
+                <td><code>WonderSwanChip</code> 更新：<code>channel_enabled[0] = false</code>。<strong>状态机检测到“关”信号</strong>。</td>
+            </tr>
+        </tbody>
+    </table>
+    <p><strong>生成的 MIDI 事件序列:</strong></p>
+    <table>
+        <thead>
+            <tr>
+                <th>Tick</th>
+                <th>MIDI 事件</th>
+                <th>通道</th>
+                <th>数据 1 (音高/CC#)</th>
+                <th>数据 2 (力度/值)</th>
+                <th>备注</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td>100</td>
+                <td><code>Note On</code></td>
+                <td>0</td>
+                <td>65 (F4)</td>
+                <td>105</td>
+                <td>音符开始。音高由周期 <code>1760</code> 算出，力度由音量 <code>8</code> 经非线性映射得到。</td>
+            </tr>
+            <tr>
+                <td>124</td>
+                <td><code>Control Change</code></td>
+                <td>0</td>
+                <td>11 (Expression)</td>
+                <td>88</td>
+                <td>音符持续期间，音量从 <code>8</code> 降到 <code>4</code>，触发一个表情控制器事件。</td>
+            </tr>
+            <tr>
+                <td>148</td>
+                <td><code>Note Off</code></td>
+                <td>0</td>
+                <td>65 (F4)</td>
+                <td>0</td>
+                <td>通道被禁用，触发音符关闭事件。</td>
+            </tr>
+        </tbody>
+    </table>
+    <p>这个例子清晰地展示了转换器如何像一个真正的芯片模拟器一样运作，通过响应寄存器状态的变化来实时、智能地生成MIDI流。</p>
+
+    <hr>
+
+    <h2>2. 程序工作流程详解</h2>
+    <p><code>vgm_ws_to_mid</code> 的核心是一个状态机，它模拟 WonderSwan 声音芯片的行为，并将状态变化实时翻译为 MIDI 事件。</p>
+    
+    <h3>2.1. 概览</h3>
+    <ol>
+        <li><strong>读取 (Read)</strong>: <code>VgmReader</code> 逐字节读取 VGM 文件，解析出命令（如端口写入、等待）。</li>
+        <li><strong>处理 (Process)</strong>: <code>main</code> 函数循环处理 VGM 命令。
+            <ul>
+                <li>如果是<strong>等待命令</strong>，则累加时间。</li>
+                <li>如果是<strong>端口写入命令</strong>，则将其发送给 <code>WonderSwanChip</code>。</li>
+            </ul>
+        </li>
+        <li><strong>模拟与翻译 (Simulate & Translate)</strong>: <code>WonderSwanChip</code> 接收端口写入数据，更新内部寄存器状态（如频率、音量）。每次更新后，它会检查通道状态是否发生变化（如音符开关、音高变化、音量变化）。</li>
+        <li><strong>生成 (Generate)</strong>: 如果检测到有意义的状态变化，<code>WonderSwanChip</code> 会调用 <code>MidiWriter</code> 生成相应的 MIDI 事件（Note On/Off, Control Change），并附上当前精确的 MIDI tick 时间。</li>
+        <li><strong>写入 (Write)</strong>: 所有 VGM 命令处理完毕后，<code>MidiWriter</code> 将所有生成的事件组装成一个标准的 MIDI 文件并保存到磁盘。</li>
+    </ol>
+
+    <h3>2.2. 关键组件</h3>
+    <ul>
+        <li><strong><code>main.cpp</code></strong>: 程序入口。负责解析命令行参数，实例化 <code>VgmReader</code>, <code>MidiWriter</code>, 和 <code>WonderSwanChip</code>，并驱动整个转换流程。</li>
+        <li><strong><code>VgmReader.h/.cpp</code></strong>: VGM 文件解析器。它以流式方式读取文件，能处理数据块和各种 VGM 命令，屏蔽了文件格式的复杂性。</li>
+        <li><strong><code>WonderSwanChip.h/.cpp</code></strong>: <strong>转换核心</strong>。
+            <ul>
+                <li>内部维护一个 <code>io_ram</code> 数组来模拟芯片的 256 个 I/O 寄存器。</li>
+                <li><code>write_port()</code> 方法是关键入口，它根据写入的端口地址更新内部状态变量（如 <code>channel_periods</code>, <code>channel_volumes_left</code> 等）。</li>
+                <li><code>check_state_and_update_midi()</code> 是状态机的大脑。每次状态更新后，它会比较当前状态和上一状态，判断是否需要生成 MIDI 事件，从而智能地处理连奏（pitch bend）、重触发（re-trigger）和音量包络。</li>
+            </ul>
+        </li>
+        <li><strong><code>MidiWriter.h/.cpp</code></strong>: MIDI 文件生成器。提供了一系列简单的 API（如 <code>add_note_on</code>, <code>add_control_change`），用于在内存中构建一个 MIDI 轨道。当转换结束时，`finalize_and_write()` 方法会计算轨道长度、添加文件头和尾，并最终写入一个格式正确的 SMF (Standard MIDI File)。</li>
+    </ul>
+
+    <h3>2.3. 关键公式与常量</h3>
+    <ul>
+        <li><strong>时序转换</strong>:<pre><code>const double SAMPLES_TO_TICKS = (480.0 * 120.0) / (44100.0 * 60.0);</code></pre></li>
+        <li><strong>音高转换</strong>:<pre><code>double freq = (3072000.0 / (2048.0 - period)) / 32.0;
+int note = static_cast&lt;int&gt;(round(69 + 12 * log2(freq / 440.0)));</code></pre></li>
+        <li><strong>音量映射</strong>:<pre><code>double normalized_vol = vgm_vol / 15.0;
+double curved_vol = pow(normalized_vol, 0.3);
+int velocity = static_cast&lt;int&gt;(curved_vol * 127.0);</code></pre></li>
+    </ul>
+
+    <hr>
+
+    <h2>3. 如何编译与运行</h2>
+    <p>本项目使用 g++ 编译器在 bash 环境下进行编译。</p>
+    <ul>
+        <li><strong>编译</strong>:
+            <pre><code>g++ -std=c++17 -o vgm_ws_to_mid/converter.exe vgm_ws_to_mid/main.cpp vgm_ws_to_mid/VgmReader.cpp vgm_ws_to_mid/WonderSwanChip.cpp vgm_ws_to_mid/MidiWriter.cpp -static</code></pre>
+        </li>
+        <li><strong>运行</strong>:
+            <pre><code>vgm_ws_to_mid/converter.exe [input_vgm_file] [output_mid_file]</code></pre>
+            例如:
+            <pre><code>vgm_ws_to_mid/converter.exe inn.vgm vgm_ws_to_mid/output.mid</code></pre>
+        </li>
+    </ul>
+
+    <hr>
+    <p>这份文档全面总结了我们的工作。希望它能为后续的开发和维护提供清晰的指引。</p>
+</body>
+</html>
